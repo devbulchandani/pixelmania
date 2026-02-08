@@ -14,6 +14,7 @@ const config = createConfig({
   transports: {
     [base.id]: http(process.env.NEXT_PUBLIC_ALCHEMY_RPC_URL_BASE_MAINNET || 'https://mainnet.base.org'),
   },
+  multiInjectedProviderDiscovery: false,
 });
 
 export function Providers({ children }: { children: React.ReactNode }) {
