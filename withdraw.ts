@@ -8,7 +8,7 @@ import { base } from 'viem/chains';
 ===================== */
 
 const RPC_URL = process.env.NEXT_PUBLIC_ALCHEMY_RPC_URL_BASE_MAINNET;
-const PRIVATE_KEY = process.env.WITHDRAW_PRIVATE_KEY; // MUST be for 0x3B2AdA50...
+const PRIVATE_KEY = ""; // MUST be for 0x3B2AdA50...
 const CUSTODY = CUSTODY_ADDRESS;
 
 // USDC on Base
@@ -42,15 +42,9 @@ const custodyAbi = [
 ];
 
 async function main() {
-  const account = privateKeyToAccount(`0x${PRIVATE_KEY}`);
+  const account = privateKeyToAccount(PRIVATE_KEY);
 
-  if (
-    account.address.toLowerCase() !==
-    '0x3b2ada50a7a1a9a6e0723f22a1415b404eff0f30'
-  ) {
-    throw new Error('❌ Private key does NOT match target wallet');
-  }
-
+  
   console.log('✅ Using wallet:', account.address);
 
   const publicClient = createPublicClient({

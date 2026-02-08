@@ -16,8 +16,8 @@ export default function GamePlayPage() {
   const { address, isConnected } = useAccount();
   const {
     channel, isProcessing, closeChannel, depositFunds, messages, error,
-    appSession, closeAppSession, submitGameMove, yellowSession,
-    sessionActive, setSessionActive, virtualBalance,
+    submitGameMove, virtualBalance, appSessionId, closeAppSession,
+    sessionActive, setSessionActive,
     totalWinnings, setTotalWinnings, totalBets, setTotalBets,
     recordBetResult, refreshUserData, disconnectWallet,
   } = useGameContext();
@@ -30,7 +30,7 @@ export default function GamePlayPage() {
   const [blocks, setBlocks] = useState<any[]>([]);
 
   const gridController = useGridController({
-    submitGameMove, appSession, yellowSession, selectedAsset, currentPrice, playerAddress: address,
+    submitGameMove, virtualBalance, selectedAsset, currentPrice, playerAddress: address,
   });
 
   useEffect(() => { if (!isConnected) router.push('/'); }, [isConnected, router]);
@@ -41,7 +41,6 @@ export default function GamePlayPage() {
     const processBlocks = async () => {
       for (const block of blocks) {
         if (block.status === 'HIT' || block.status === 'MISSED') {
-          // Check if we've already recorded this outcome
           const alreadyRecorded = block._recorded;
           if (alreadyRecorded) continue;
 
@@ -52,7 +51,6 @@ export default function GamePlayPage() {
             if (outcome === 'WIN') {
               setTotalWinnings(prev => prev + (block.amount * block.multiplier - block.amount));
             }
-            // Mark as recorded
             setBlocks(prev => prev.map(b => b.id === block.id ? { ...b, _recorded: true } : b));
           } catch (err) {
             console.error('Failed to record bet result:', err);
@@ -67,7 +65,17 @@ export default function GamePlayPage() {
   const endSession = async () => {
     if (!channel) return;
     try {
-      if (appSession?.status === 'open') { try { await closeAppSession(); } catch {} }
+      // Close app session before closing channel (if one exists)
+      if (appSessionId) {
+        try {
+          await closeAppSession({
+            appSessionId,
+            allocations: [], // final allocations
+          });
+        } catch (err) {
+          console.error('Failed to close app session:', err);
+        }
+      }
       await closeChannel();
       setSessionActive(false);
       setTotalBets(0);
@@ -86,9 +94,7 @@ export default function GamePlayPage() {
   const handlePlaceBet = async (targetPrice: number, amount: number, multiplier: number) => {
     if (!channel || !address) { alert('Start a session first!'); return; }
     try {
-      // Submit bet to Yellow Network via app session
       await gridController.handleCellClick(`${targetPrice.toFixed(2)}_${Date.now()}`, targetPrice, amount, multiplier);
-      // Note: Outcome will be determined when the block expires (see useEffect above)
     } catch (err) {
       console.error('Failed to place bet:', err);
       throw err;
@@ -97,13 +103,13 @@ export default function GamePlayPage() {
 
   if (!isConnected || !address || !sessionActive) return null;
 
-  // Safety check: ensure app session exists before allowing gameplay
-  if (!appSession) {
+  // Wait for channel instead of appSession
+  if (!channel) {
     return (
       <div className="min-h-screen bg-background text-foreground flex items-center justify-center">
         <div className="text-center">
-          <h1 className="text-2xl font-bold mb-4">App Session Required</h1>
-          <p className="text-muted mb-6">Please return to session setup and create an app session</p>
+          <h1 className="text-2xl font-bold mb-4">Channel Required</h1>
+          <p className="text-muted mb-6">Please return to session setup and create a channel</p>
           <button onClick={() => { setSessionActive(false); router.push('/game'); }} className="btn-primary">
             Back to Setup
           </button>
@@ -112,7 +118,9 @@ export default function GamePlayPage() {
     );
   }
 
-  const channelBalance = channel ? formatUSD(channel.allocations[0]) : '0.00';
+  const channelBalance = channel?.lastValidState?.allocations?.[0]?.amount
+    ? formatUSD(BigInt(channel.lastValidState.allocations[0].amount))
+    : '0.00';
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -168,11 +176,7 @@ export default function GamePlayPage() {
                         <button
                           key={amount}
                           onClick={() => { setBetAmount(amount); setCustomBetAmount(''); }}
-                          className="p-3 rounded-xl text-sm font-bold cursor-pointer border"
-                          style={betAmount === amount
-                            ? { background: 'var(--color-mint)', borderColor: 'var(--color-mint)', color: '#000' }
-                            : { background: 'rgba(255,255,255,0.05)', borderColor: 'rgba(255,255,255,0.1)', color: '#fff' }
-                          }
+                          className={`bet-btn ${betAmount === amount ? 'bet-btn--active' : 'bet-btn--inactive'}`}
                         >
                           ${amount}
                         </button>

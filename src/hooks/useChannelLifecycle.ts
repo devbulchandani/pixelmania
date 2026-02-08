@@ -2,9 +2,10 @@
 
 import { useState, useCallback } from 'react';
 import { base } from 'wagmi/chains';
-import { type Address, type Hex, formatUnits, parseUnits } from 'viem';
+import { type Address, type Hex, parseUnits } from 'viem';
 import { NitroliteClient } from '@erc7824/nitrolite';
 import { BASE_MAINNET_USD_TOKEN } from '@/utils/yellowConstants';
+import { basePublicClient } from '@/lib/viemClients';
 
 interface YellowHook {
   isConnected: boolean;
@@ -59,14 +60,12 @@ export function useChannelLifecycle({
       console.log('[Channel] Creating channel...');
       const channelData = await yellow.createChannel();
 
-      console.log('[Channel] Channel created:', channelData.channel_id?.slice(0, 10) + '...');
       console.log('[Channel] Participants:', channelData.channel.participants);
 
-      const createdChannelId = channelData.channel_id as Hex;
-
       // Step 3: Submit channel to blockchain
+      // Get channelId from nitroliteClient return value (matches create_channel.ts tutorial)
       console.log('[Channel] Submitting to blockchain...');
-      const { txHash } = await nitroliteClient.createChannel({
+      const { channelId: createdChannelId, txHash } = await nitroliteClient.createChannel({
         channel: {
           ...channelData.channel,
           challenge: BigInt(channelData.channel.challenge),
@@ -85,8 +84,16 @@ export function useChannelLifecycle({
         serverSignature: channelData.serverSignature || channelData.server_signature,
       });
 
+      console.log('[Channel] Channel ID:', createdChannelId);
       console.log('[Channel] On-chain TX:', txHash?.slice(0, 10) + '...');
       setChannelId(createdChannelId);
+
+      // Wait for create channel TX to be mined before deposit (prevents nonce collision)
+      if (txHash) {
+        console.log('[Channel] Waiting for create TX confirmation...');
+        await basePublicClient.waitForTransactionReceipt({ hash: txHash });
+        console.log('[Channel] Create TX confirmed');
+      }
 
       // Step 4: Deposit to custody (if amount > 0)
       if (depositAmount && parseFloat(depositAmount) > 0) {
@@ -100,18 +107,26 @@ export function useChannelLifecycle({
 
         console.log('[Channel] Deposit TX:', depositTxHash?.slice(0, 10) + '...');
 
-        // Step 5: Resize channel (move funds from custody to channel)
-        console.log('[Channel] Resizing channel...');
+        // Wait for deposit TX to be mined before resize (prevents nonce collision)
+        if (depositTxHash) {
+          console.log('[Channel] Waiting for deposit TX confirmation...');
+          await basePublicClient.waitForTransactionReceipt({ hash: depositTxHash });
+          console.log('[Channel] Deposit TX confirmed');
+        }
 
-        // Get broker address
+        // Step 5: Resize + Allocate (custody → channel → unified balance)
+        // Matches resize_channel.ts tutorial: funds_destination = brokerAddress when allocating
+        console.log('[Channel] Getting broker address...');
         const config = await yellow.getConfig();
-        const brokerAddress = config.brokerAddress;
+        const brokerAddress = config.brokerAddress as Address;
+        console.log('[Channel] Broker:', brokerAddress.slice(0, 10) + '...');
 
+        console.log('[Channel] Resizing + allocating to unified balance...');
         const resizeData = await yellow.resizeChannel({
           channelId: createdChannelId,
           resizeAmount: amountInUnits,
-          allocateAmount: 0n,
-          fundsDestination: address,
+          allocateAmount: amountInUnits,
+          fundsDestination: brokerAddress,
         });
 
         // Submit resize to blockchain
@@ -133,7 +148,7 @@ export function useChannelLifecycle({
           proofStates: [previousChannelData.lastValidState],
         });
 
-        console.log('[Channel] ✅ Channel ready with funds');
+        console.log('[Channel] ✅ Channel ready — funds in unified balance');
       }
 
       return { channelId: createdChannelId, txHash };
@@ -144,6 +159,74 @@ export function useChannelLifecycle({
       setIsProcessing(false);
     }
   }, [yellow, nitroliteClient, address, ensureCorrectChain]);
+
+  // Add funds to an existing channel (deposit + resize)
+  const addFunds = useCallback(async (depositAmount: string) => {
+    if (!channelId || !address || !nitroliteClient) {
+      throw new Error('No channel to add funds to');
+    }
+
+    setIsProcessing(true);
+
+    try {
+      await ensureCorrectChain();
+
+      const amountInUnits = parseUnits(depositAmount, 6);
+
+      // Step 1: Deposit USDC to custody
+      console.log(`[Channel] Depositing ${depositAmount} USDC...`);
+      const depositTxHash = await nitroliteClient.deposit(
+        BASE_MAINNET_USD_TOKEN,
+        amountInUnits
+      );
+      console.log('[Channel] Deposit TX:', depositTxHash?.slice(0, 10) + '...');
+
+      // Wait for deposit TX to be mined before resize
+      if (depositTxHash) {
+        console.log('[Channel] Waiting for deposit TX confirmation...');
+        await basePublicClient.waitForTransactionReceipt({ hash: depositTxHash });
+        console.log('[Channel] Deposit TX confirmed');
+      }
+
+      // Step 2: Resize + Allocate (custody → channel → unified balance)
+      console.log('[Channel] Getting broker address...');
+      const config = await yellow.getConfig();
+      const brokerAddress = config.brokerAddress as Address;
+
+      console.log('[Channel] Resizing + allocating to unified balance...');
+      const resizeData = await yellow.resizeChannel({
+        channelId,
+        resizeAmount: amountInUnits,
+        allocateAmount: amountInUnits,
+        fundsDestination: brokerAddress,
+      });
+
+      const previousChannelData = await nitroliteClient.getChannelData(channelId);
+
+      await nitroliteClient.resizeChannel({
+        resizeState: {
+          channelId,
+          intent: resizeData.state.intent,
+          version: BigInt(resizeData.state.version),
+          data: resizeData.state.stateData || resizeData.state.state_data || '0x',
+          allocations: resizeData.state.allocations.map((a: any) => ({
+            destination: a.destination,
+            token: a.token,
+            amount: BigInt(a.amount),
+          })),
+          serverSignature: resizeData.serverSignature || resizeData.server_signature,
+        },
+        proofStates: [previousChannelData.lastValidState],
+      });
+
+      console.log('[Channel] ✅ Funds added to unified balance');
+    } catch (err) {
+      console.error('[Channel] Add funds error:', err);
+      throw err;
+    } finally {
+      setIsProcessing(false);
+    }
+  }, [yellow, nitroliteClient, channelId, address, ensureCorrectChain]);
 
   // Close channel
   const closeChannel = useCallback(async () => {
@@ -195,6 +278,7 @@ export function useChannelLifecycle({
     channelId,
     isProcessing,
     setupChannel,
+    addFunds,
     closeChannel,
   };
 }

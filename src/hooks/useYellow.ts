@@ -12,11 +12,18 @@ import {
   createResizeChannelMessage,
   createCloseChannelMessage,
   createGetConfigMessage,
+  createAppSessionMessage,
+  createSubmitAppStateMessage,
+  createCloseAppSessionMessage,
   createEIP712AuthMessageSigner,
   createECDSAMessageSigner,
   RPCMethod,
   type RPCResponse,
   type AuthChallengeResponse,
+  type RPCAppDefinition,
+  type RPCAppSessionAllocation,
+  RPCProtocolVersion,
+  type RPCData,
 } from '@erc7824/nitrolite';
 import { base } from 'viem/chains';
 import { BASE_MAINNET_USD_TOKEN } from '@/utils/yellowConstants';
@@ -67,6 +74,11 @@ export function useYellow() {
   const walletClientRef = useRef(walletClient);
   const addressRef = useRef(address);
 
+  // CRITICAL: Store expire timestamp in a ref so it's the SAME between
+  // authenticate() and handleAuthChallenge() — computing it independently
+  // in each function causes "invalid challenge or signature" errors
+  const sessionExpireRef = useRef<bigint>(0n);
+
   // Update refs when values change
   useEffect(() => {
     walletClientRef.current = walletClient;
@@ -114,7 +126,7 @@ export function useYellow() {
           break;
 
         case RPCMethod.CreateChannel:
-          log(`Channel created: ${message.params?.channel_id?.slice(0, 10)}...`);
+          log(`Channel response received`);
           notifyHandler('createChannel', message.params);
           break;
 
@@ -136,17 +148,41 @@ export function useYellow() {
           log(`Balance update: ${message.params?.balance_updates?.length || 0} updates`);
           break;
 
+        case RPCMethod.CreateAppSession:
+          log(`App session created: ${message.params?.appSessionId?.slice(0, 10)}...`);
+          notifyHandler('createAppSession', message.params);
+          break;
+
+        case RPCMethod.SubmitAppState:
+          log('App state updated');
+          notifyHandler('submitAppState', message.params);
+          break;
+
+        case RPCMethod.CloseAppSession:
+          log('App session closed');
+          notifyHandler('closeAppSession', message.params);
+          break;
+
+        case RPCMethod.AppSessionUpdate:
+          log('App session update (asu) received');
+          break;
+
         case RPCMethod.Error:
           console.error('[Yellow] Error:', message.params?.error);
+          // Reject ALL pending handlers so they don't timeout silently
+          for (const [key, handler] of responseHandlersRef.current.entries()) {
+            handler({ _error: true, error: message.params?.error });
+          }
+          responseHandlersRef.current.clear();
           break;
 
         default:
-          console.log('[Yellow] Unhandled:', method);
+          console.log('[Yellow] Unhandled:', method, message.params);
       }
     });
   }, [log]);
 
-  // Handle auth challenge
+  // Handle auth challenge — uses the SAME expire timestamp stored by authenticate()
   const handleAuthChallenge = useCallback(async (message: AuthChallengeResponse) => {
     const currentWalletClient = walletClientRef.current;
     const currentAddress = addressRef.current;
@@ -158,16 +194,16 @@ export function useYellow() {
 
     log('Signing auth challenge with MetaMask...');
 
-    const sessionExpireTimestamp = BigInt(Math.floor(Date.now() / 1000) + SESSION_DURATION);
-
+    // Use the SAME expire timestamp that was stored by authenticate()
+    // Matches create_channel.ts tutorial exactly
     const authParams = {
       scope: APP_SCOPE,
       application: currentAddress,
       participant: sessionKeyRef.current.address,
-      expire: sessionExpireTimestamp,
+      expire: sessionExpireRef.current,
       allowances: [{ asset: 'usdc', amount: '1000' }],
       session_key: sessionKeyRef.current.address,
-      expires_at: sessionExpireTimestamp,
+      expires_at: BigInt(sessionExpireRef.current),
     };
 
     const eip712Signer = createEIP712AuthMessageSigner(
@@ -189,7 +225,7 @@ export function useYellow() {
     }
   }, []);
 
-  // Wait for response
+  // Wait for response — rejects on error or timeout
   const waitForResponse = useCallback((key: string, timeoutMs = 30000): Promise<any> => {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -199,7 +235,11 @@ export function useYellow() {
 
       responseHandlersRef.current.set(key, (data) => {
         clearTimeout(timeout);
-        resolve(data);
+        if (data?._error) {
+          reject(new Error(data.error || `Error in ${key}`));
+        } else {
+          resolve(data);
+        }
       });
     });
   }, []);
@@ -220,14 +260,20 @@ export function useYellow() {
 
     log('Authenticating...');
 
+    // Compute expire timestamp ONCE as BigInt and store it so handleAuthChallenge uses the same value
+    // Matches create_channel.ts: const sessionExpireTimestamp = BigInt(Math.floor(Date.now() / 1000) + 3600)
     const sessionExpireTimestamp = BigInt(Math.floor(Date.now() / 1000) + SESSION_DURATION);
+    sessionExpireRef.current = sessionExpireTimestamp;
 
+    // Matches create_channel.ts auth request exactly:
+    //   application = app name string (NOT wallet address)
+    //   expires_at = BigInt (NOT expire as String)
     const authMessage = await createAuthRequestMessage({
       address: currentAddress,
       session_key: sessionKeyRef.current.address,
       application: APP_NAME,
       allowances: [{ asset: 'usdc', amount: '1000' }],
-      expires_at: sessionExpireTimestamp,
+      expires_at: BigInt(sessionExpireTimestamp),
       scope: APP_SCOPE,
     });
 
@@ -277,11 +323,12 @@ export function useYellow() {
     return waitForResponse('getConfig');
   }, [waitForResponse]);
 
-  // Resize channel
+  // Resize channel — matches resize_channel.ts tutorial:
+  // Only include resize_amount / allocate_amount when they are defined (not 0n)
   const resizeChannel = useCallback(async (params: {
     channelId: Hex;
-    resizeAmount: bigint;
-    allocateAmount: bigint;
+    resizeAmount?: bigint;
+    allocateAmount?: bigint;
     fundsDestination: Address;
   }) => {
     if (!isAuthenticatedRef.current || !yellowRef.current) {
@@ -294,8 +341,8 @@ export function useYellow() {
       sessionKeyRef.current.signer,
       {
         channel_id: params.channelId,
-        resize_amount: params.resizeAmount,
-        allocate_amount: params.allocateAmount,
+        ...(params.resizeAmount != null && params.resizeAmount !== 0n && { resize_amount: params.resizeAmount }),
+        ...(params.allocateAmount != null && params.allocateAmount !== 0n && { allocate_amount: params.allocateAmount }),
         funds_destination: params.fundsDestination,
       }
     );
@@ -322,6 +369,80 @@ export function useYellow() {
 
     yellowRef.current.sendMessage(message);
     return waitForResponse('closeChannel');
+  }, [log, waitForResponse]);
+
+  // Create app session — matches app_session_two_signers.ts tutorial
+  const createAppSession = useCallback(async (params: {
+    playerAddress: Address;
+    brokerAddress: Address;
+    amount: string;
+  }) => {
+    if (!isAuthenticatedRef.current || !yellowRef.current) {
+      throw new Error('Not authenticated');
+    }
+
+    log('Creating app session...');
+
+    const appDefinition: RPCAppDefinition = {
+      protocol: RPCProtocolVersion.NitroRPC_0_4,
+      participants: [params.playerAddress, params.brokerAddress],
+      weights: [50, 50],
+      quorum: 100,
+      challenge: 0,
+      nonce: Date.now(),
+      application: APP_NAME,
+    };
+
+    const allocations: RPCAppSessionAllocation[] = [
+      { participant: params.playerAddress, asset: 'usdc', amount: params.amount },
+      { participant: params.brokerAddress, asset: 'usdc', amount: '0.00' },
+    ];
+
+    const message = await createAppSessionMessage(
+      sessionKeyRef.current.signer,
+      { definition: appDefinition, allocations }
+    );
+
+    yellowRef.current.sendMessage(message);
+    return waitForResponse('createAppSession');
+  }, [log, waitForResponse]);
+
+  // Submit app state update (game move)
+  const submitAppState = useCallback(async (params: {
+    appSessionId: Hex;
+    allocations: RPCAppSessionAllocation[];
+  }) => {
+    if (!isAuthenticatedRef.current || !yellowRef.current) {
+      throw new Error('Not authenticated');
+    }
+
+    const message = await createSubmitAppStateMessage(
+      sessionKeyRef.current.signer,
+      { app_session_id: params.appSessionId, allocations: params.allocations }
+    );
+
+    yellowRef.current.sendMessage(message);
+    return waitForResponse('submitAppState');
+  }, [waitForResponse]);
+
+  // Close app session
+  const closeAppSession = useCallback(async (params: {
+    appSessionId: Hex;
+    allocations: RPCAppSessionAllocation[];
+  }) => {
+    if (!isAuthenticatedRef.current || !yellowRef.current) {
+      throw new Error('Not authenticated');
+    }
+
+    log('Closing app session...');
+
+    const message = await createCloseAppSessionMessage(
+      sessionKeyRef.current.signer,
+      { app_session_id: params.appSessionId, allocations: params.allocations }
+    );
+
+    yellowRef.current.sendMessage(message);
+    return waitForResponse('closeAppSession');
   }, [log, waitForResponse]);
 
   // Disconnect
@@ -355,5 +476,9 @@ export function useYellow() {
     getConfig,
     resizeChannel,
     closeChannel,
+    createAppSession,
+    submitAppState,
+    closeAppSession,
+    sessionKey: sessionKeyRef.current,
   };
 }
