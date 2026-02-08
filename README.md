@@ -1,240 +1,109 @@
-# Omikuji (おみくじ) - Fast Prediction Markets
+# ⛩️ Omikuji (おみくじ)
 
-A Next.js application for instant crypto price prediction betting using Yellow Network state channels with real MetaMask wallet integration via Wagmi.
+**Instant, Gasless Multiplier Gaming on Yellow Network**
 
-## Features
+Omikuji is a decentralized high-frequency gaming platform built on the **Yellow Network** using **Nitrolite (ERC-7824)**. It brings the traditional Japanese "sacred lot" experience to Web3, allowing players to place bets on moving multiplier boxes with instant off-chain finality and zero transaction friction.
 
-- **Real Wallet Connection** using Wagmi hooks and MetaMask SDK
-- **Yellow Network Integration** with state channel payments
-- **WebSocket Communication** with Yellow Network Sandbox
-- **Session Management** for payment channels
-- **Instant Payments** without blockchain transactions
-- **Real-time Activity Log** showing all events and responses
+---
 
-## Tech Stack
+## 🚀 The Vision
+In traditional Web3 gaming, every move requires a wallet confirmation and a wait for block finality. This latency kills the excitement of high-frequency gaming. **Omikuji** solves this by moving the entire game loop into **State Channels**. 
 
-- **Next.js 16** - React framework with App Router
-- **Wagmi 3.x** - Ethereum React hooks for wallet connection
-- **@erc7824/nitrolite** - Yellow Network SDK
-- **Viem 2.x** - Ethereum library
-- **@metamask/sdk** - MetaMask integration
-- **@tanstack/react-query** - Data fetching and state management
-- **TailwindCSS 4** - Styling
-- **TypeScript 5** - Type safety
+* **One Signature** to start the session.
+* **Infinite Moves** with zero popups.
+* **Instant Settlement** when you're done.
 
-## Setup
+---
 
-1. **Install dependencies:**
-   ```bash
-   npm install
-   # or
-   yarn install
-   # or
-   bun install
-   ```
+## 🏗️ Technical Architecture
 
-2. **Run the development server:**
-   ```bash
-   npm run dev
-   ```
+Omikuji utilizes a **Dual-Signer Architecture** to decouple security from speed:
 
-3. **Open your browser:**
-   Navigate to [http://localhost:3000](http://localhost:3000)
+1.  **Main Wallet (MetaMask):** Used exclusively for on-chain transactions (Deposit/Withdraw) and the initial **EIP-712 Authentication** challenge.
+2.  **Session Key (Ephemeral):** A module-level ECDSA key generated fresh each session. It signs every game move and state update off-chain, enabling a "Web2-like" UX without sacrificing non-custodial security.
 
-4. **Setup MetaMask:**
-   - Install [MetaMask browser extension](https://metamask.io/)
-   - Switch to Sepolia testnet
-   - Get test ETH from [Sepolia faucet](https://sepoliafaucet.com/)
 
-## How to Use
 
-### 1. Connect Wallet
-- Click "Connect with MetaMask" button
-- Approve the connection in MetaMask popup
-- Your wallet address will be displayed once connected
-- Make sure you're on the Sepolia testnet
+### How it's Made (The Tech Stack)
+* **Infrastructure:** [Yellow Network](https://www.yellow.com/) Clearnode via WebSockets.
+* **State Channels:** [@erc7824/nitrolite](https://www.npmjs.com/package/@erc7824/nitrolite) for off-chain state management.
+* **Database:** [NeonDB](https://neon.tech/) (Serverless Postgres) with **Prisma ORM** for session persistence and global leaderboards.
+* **Identity:** **ENS (Ethereum Name Service)** integration for human-readable player profiles.
+* **Frontend:** Next.js 14, Tailwind CSS, Wagmi, and Viem.
 
-### 2. Connect to Yellow Network
-- Click "Connect to Sandbox" to establish WebSocket connection
-- The app connects to Yellow Network's sandbox environment at `wss://clearnet-sandbox.yellow.com/ws`
-- Connection status will be shown in real-time
-- Activity log will show "Connected to Yellow Network Sandbox"
+---
 
-### 3. Create Payment Session
-- Enter the recipient's Ethereum address (must be a valid address starting with 0x)
-- Set the initial balance for the session (default: 100)
-- Click "Create Session" to initialize a payment channel
-- The session message is cryptographically signed using your wallet
-- Session ID will be displayed once the session is created
+## ⛩️ Game Flow & Logic
 
-### 4. Send Payment
-- Enter the payment amount (default: 10)
-- Click "Send Payment" to send instant payment through the state channel
-- Payment is signed using your connected wallet
-- Confirmation appears in the activity log
-- No blockchain transaction needed - instant settlement!
+### 1. The Yellow Session Handshake
+We built a robust `useYellowSession` hook that manages the complex handshake with the Yellow Clearnode:
+* **AuthRequest:** Initiates the session.
+* **AuthChallenge:** Triggers the MetaMask EIP-712 signature.
+* **AuthVerify:** Validates the session key for the next 3600 seconds.
 
-## Architecture
+### 2. The Multiplier Engine
+The game uses **Virtual Ledgering**. When a user hits a multiplier box:
+* An off-chain state update is signed by the Session Key.
+* The "Virtual Pool" in the UI updates instantly.
+* The state is persisted to **NeonDB** to allow session recovery if the browser refreshes.
 
-### Components
 
-- **`YellowPayment.tsx`** (src/app/components/YellowPayment.tsx)
-  - Main UI component with 4-step workflow
-  - Wallet connection interface using Wagmi connectors
-  - Yellow Network connection controls
-  - Session creation form with validation
-  - Payment interface with amount input
-  - Real-time activity log display
 
-### Hooks
+### 3. ENS Identity
+To bridge the gap between "Anonymity" and "Identity," Omikuji resolves the `walletAddress` to an **ENS name** (e.g., `omikuji.eth`). This is used to display a global leaderboard of the luckiest "Daikichi" (Great Blessing) winners.
 
-- **`useYellow.ts`** (src/app/hooks/useYellow.ts)
-  - Custom hook managing Yellow Network integration
-  - Uses Wagmi hooks:
-    - `useAccount()` - Get connected wallet address
-    - `useWalletClient()` - Get wallet client for signing
-    - `useDisconnect()` - Disconnect wallet
-  - WebSocket connection management
-  - Session creation using `createAppSessionMessage` from Yellow SDK
-  - Payment signing with wallet client
-  - Message parsing with `parseAnyRPCResponse`
-  - Real-time event handling and error management
+---
 
-### Providers
+## 📦 Installation & Setup
 
-- **`providers.tsx`** (src/app/providers.tsx)
-  - Client component wrapping the app with necessary providers
-  - Wagmi configuration:
-    - Sepolia testnet chain
-    - MetaMask connector with dApp metadata
-    - HTTP transport for RPC calls
-  - React Query client for async state management
+### Prerequisites
+* Node.js 18+
+* A NeonDB Connection String
+* Alchemy/Infura RPC for Sepolia or Base Testnet
 
-### Types
+### Step-by-Step
+1.  **Clone the Repo:**
+    ```bash
+    git clone [https://github.com/your-username/omikuji.git](https://github.com/your-username/omikuji.git)
+    cd omikuji
+    ```
 
-- **`window.d.ts`** (src/types/window.d.ts)
-  - TypeScript definitions for MetaMask ethereum provider
-  - Window interface extensions
+2.  **Install Dependencies:**
+    ```bash
+    npm install
+    ```
 
-## Yellow Network Integration
+3.  **Environment Variables:**
+    Create a `.env` file in the root:
+    ```env
+    DATABASE_URL="postgresql://user:password@host/neondb?sslmode=require"
+    NEXT_PUBLIC_ALCHEMY_ID="your_api_key"
+    NEXT_PUBLIC_YELLOW_WS="wss://[clearnet-sandbox.yellow.com/ws](https://clearnet-sandbox.yellow.com/ws)"
+    ```
 
-The app uses the official Yellow Network SDK (`@erc7824/nitrolite`) for:
+4.  **Initialize Database:**
+    ```bash
+    npx prisma db push
+    npx prisma generate
+    ```
 
-### 1. Creating App Sessions
-```typescript
-const sessionMessage = await createAppSessionMessage(
-  {
-    participants: [senderAddress, recipientAddress],
-    weights: [1, 1],
-    quorum: 2,
-    allocations: {
-      [senderAddress]: initialBalance,
-      [recipientAddress]: '0',
-    },
-    chainId: '11155111', // Sepolia
-  },
-  walletClient
-);
-```
+5.  **Run Development Server:**
+    ```bash
+    npm run dev
+    ```
 
-### 2. Parsing RPC Responses
-```typescript
-const parsed = parseAnyRPCResponse(data);
-if (parsed.result?.sessionId) {
-  // Session created successfully
-}
-```
+---
 
-### 3. WebSocket Communication
-- Connects to `wss://clearnet-sandbox.yellow.com/ws`
-- Sends JSON-RPC 2.0 formatted messages
-- Receives and parses responses in real-time
-- Handles session creation, payment confirmation, and errors
+## 🧠 Technical Challenges Overcome
+* **Handshake Protocol:** Solved the `WebSocket 1006` handshake errors by implementing custom protocol headers (`nitro-rpc`) and origin-verified tunnels.
+* **Signature Debugging:** Built a custom utility to verify `keccak256` hashes of state objects to ensure the user and Yellow server signatures matched perfectly.
+* **BigInt Serialization:** Implemented a custom JSON serializer to handle high-precision Wei values from Prisma without losing accuracy in the UI.
 
-### 4. Signing Payments
-```typescript
-const signature = await walletClient.signMessage({
-  account: address,
-  message: JSON.stringify(paymentData),
-});
-```
+---
 
-## Network Configuration
+## 📜 License
+Distributed under the MIT License. See `LICENSE` for more information.
 
-- **Chain:** Sepolia Testnet
-- **Chain ID:** 11155111
-- **Yellow Network:** Sandbox environment
-- **WebSocket Endpoint:** `wss://clearnet-sandbox.yellow.com/ws`
-- **RPC Protocol:** JSON-RPC 2.0
+---
 
-## Project Structure
-
-```
-pixel-mania/
-├── src/
-│   ├── app/
-│   │   ├── components/
-│   │   │   └── YellowPayment.tsx    # Main payment UI component
-│   │   ├── hooks/
-│   │   │   └── useYellow.ts         # Yellow Network integration hook
-│   │   ├── providers.tsx            # Wagmi & React Query providers
-│   │   ├── layout.tsx               # Root layout with providers
-│   │   ├── page.tsx                 # Home page
-│   │   └── globals.css              # Global styles
-│   └── types/
-│       └── window.d.ts              # MetaMask type definitions
-├── package.json                     # Dependencies
-└── README.md                        # This file
-```
-
-## Key Features Explained
-
-### Real Wagmi Integration
-Instead of manually calling `window.ethereum.request()`, the app uses:
-- `useConnect()` hook with MetaMask connector
-- `useAccount()` to track connection state
-- `useWalletClient()` to get signing capabilities
-- `useDisconnect()` for proper cleanup
-
-### Yellow SDK Integration
-- Uses `createAppSessionMessage()` from the official SDK
-- Properly formats session parameters
-- Signs messages with wallet client
-- Parses responses with `parseAnyRPCResponse()`
-
-### State Channel Benefits
-- **Instant payments** - no waiting for blockchain confirmation
-- **Low cost** - minimal gas fees, only on channel open/close
-- **High throughput** - hundreds of transactions per second
-- **Privacy** - off-chain transactions
-
-## References
-
-- [Yellow Network Documentation](https://docs.yellow.org/)
-- [Yellow Network Quick Start Guide](https://docs.yellow.org/docs/build/quick-start/)
-- [Wagmi Documentation](https://wagmi.sh/)
-- [Viem Documentation](https://viem.sh/)
-- [MetaMask SDK](https://docs.metamask.io/wallet/how-to/connect/set-up-sdk/)
-
-## Troubleshooting
-
-### MetaMask not connecting
-- Make sure MetaMask extension is installed
-- Check that you're on Sepolia testnet
-- Try refreshing the page
-- Check browser console for errors
-
-### WebSocket connection fails
-- Verify internet connection
-- Check that Yellow Network sandbox is online
-- Look at activity log for error messages
-
-### Session creation fails
-- Ensure wallet is connected
-- Verify recipient address is valid
-- Check that WebSocket is connected
-- Review activity log for specific errors
-
-## License
-
-MIT
+**Built with ❤️ for the Yellow Network Hackathon.**
